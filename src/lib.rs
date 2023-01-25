@@ -4,6 +4,9 @@ use regex::Regex;
 use starknet::core::types::FieldElement;
 use starknet::core::utils::get_contract_address;
 
+// (salt, address)
+type VanityAddress = (FieldElement, FieldElement);
+
 /// Find the salt for contract deployment that
 /// would result in a contract address that match
 /// the given pattern.
@@ -20,14 +23,16 @@ pub fn find_vanity_contract_address<T: VanityMatcher>(
     deployer: Option<FieldElement>,
     matcher: T,
 ) -> Option<FieldElement> {
-    wallet_generator(class_hash, constructor_calldata, deployer).find_any(create_matcher(matcher))
+    wallet_generator(class_hash, constructor_calldata, deployer)
+        .find_any(create_matcher(matcher))
+        .map(|(salt, _)| salt)
 }
 
 /// Creates a salt matcher function, which takes a reference to a [FieldElement] and returns
 /// whether it found a match or not by using `matcher`.
 #[inline]
-pub fn create_matcher<T: VanityMatcher>(matcher: T) -> impl Fn(&FieldElement) -> bool {
-    move |addr| matcher.is_match(addr)
+pub fn create_matcher<T: VanityMatcher>(matcher: T) -> impl Fn(&VanityAddress) -> bool {
+    move |(_, addr)| matcher.is_match(addr)
 }
 
 /// Returns an infinite parallel iterator which yields a [FieldElement].
@@ -36,7 +41,7 @@ pub fn wallet_generator(
     class_hash: FieldElement,
     constructor_calldata: &[FieldElement],
     deployer: Option<FieldElement>,
-) -> impl ParallelIterator<Item = FieldElement> + '_ {
+) -> impl ParallelIterator<Item = VanityAddress> + '_ {
     std::iter::repeat(()).par_bridge().map(move |_| {
         compute_contract_address_with_random_salt(class_hash, constructor_calldata, deployer)
     })
@@ -46,17 +51,19 @@ pub fn compute_contract_address_with_random_salt(
     class_hash: FieldElement,
     constructor_calldata: &[FieldElement],
     deployer: Option<FieldElement>,
-) -> FieldElement {
+) -> VanityAddress {
     let mut r = [0u64; 4];
     thread_rng().fill(&mut r);
     let salt = FieldElement::from_mont(r);
 
-    get_contract_address(
+    let addr = get_contract_address(
         salt,
         class_hash,
         constructor_calldata,
         deployer.unwrap_or(FieldElement::ZERO),
-    )
+    );
+
+    (salt, addr)
 }
 
 /// A trait to match vanity addresses.
@@ -168,17 +175,20 @@ mod tests {
         let regex = Regex::new(&format!(r"^6969")).unwrap();
         let matcher = SingleRegexMatcher { re: regex.clone() };
 
-        let address = find_vanity_contract_address(
+        let contract_data = (
             FieldElement::from_hex_be("0x123456").unwrap(),
             &[
                 FieldElement::from_hex_be("0x4290").unwrap(),
                 FieldElement::from_hex_be("0x7777").unwrap(),
             ],
-            None,
-            matcher,
         );
 
-        assert!(regex.is_match(&format!("{:x}", address.unwrap())))
+        let salt =
+            find_vanity_contract_address(contract_data.0, contract_data.1, None, matcher).unwrap();
+        let address =
+            get_contract_address(salt, contract_data.0, contract_data.1, FieldElement::ZERO);
+
+        assert!(regex.is_match(&format!("{:x}", address)))
     }
 
     #[test]
@@ -186,17 +196,20 @@ mod tests {
         let regex = Regex::new(&format!(r"2077$")).unwrap();
         let matcher = SingleRegexMatcher { re: regex.clone() };
 
-        let address = find_vanity_contract_address(
+        let contract_data = (
             FieldElement::from_hex_be("0x123456").unwrap(),
             &[
                 FieldElement::from_hex_be("0x4290").unwrap(),
                 FieldElement::from_hex_be("0x7777").unwrap(),
             ],
-            None,
-            matcher,
         );
 
-        assert!(regex.is_match(&format!("{:x}", address.unwrap())))
+        let salt =
+            find_vanity_contract_address(contract_data.0, contract_data.1, None, matcher).unwrap();
+        let address =
+            get_contract_address(salt, contract_data.0, contract_data.1, FieldElement::ZERO);
+
+        assert!(regex.is_match(&format!("{:x}", address)))
     }
 
     #[test]
@@ -206,18 +219,18 @@ mod tests {
             left: prefix.clone(),
         };
 
-        let address = find_vanity_contract_address(
+        let contract_data = (
             FieldElement::from_hex_be("0x123456").unwrap(),
             &[
                 FieldElement::from_hex_be("0x4290").unwrap(),
                 FieldElement::from_hex_be("0x7777").unwrap(),
             ],
-            None,
-            matcher,
-        )
-        .unwrap();
+        );
 
-        println!("{:064x}", address);
+        let salt =
+            find_vanity_contract_address(contract_data.0, contract_data.1, None, matcher).unwrap();
+        let address =
+            get_contract_address(salt, contract_data.0, contract_data.1, FieldElement::ZERO);
 
         assert!(address.to_bytes_be().starts_with(&prefix));
     }
@@ -229,18 +242,18 @@ mod tests {
             right: prefix.clone(),
         };
 
-        let address = find_vanity_contract_address(
+        let contract_data = (
             FieldElement::from_hex_be("0x123456").unwrap(),
             &[
                 FieldElement::from_hex_be("0x4290").unwrap(),
                 FieldElement::from_hex_be("0x7777").unwrap(),
             ],
-            None,
-            matcher,
-        )
-        .unwrap();
+        );
 
-        println!("{:x}", address);
+        let salt =
+            find_vanity_contract_address(contract_data.0, contract_data.1, None, matcher).unwrap();
+        let address =
+            get_contract_address(salt, contract_data.0, contract_data.1, FieldElement::ZERO);
 
         assert!(address.to_bytes_be().ends_with(&prefix));
     }
